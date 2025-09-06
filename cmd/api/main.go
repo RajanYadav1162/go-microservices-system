@@ -1,15 +1,22 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"github.com/gin-gonic/gin"
 	"github.com/rajanyadav1162/go-microservice-system/internal/db"
+	"github.com/rajanyadav1162/go-microservice-system/internal/event"
 	"github.com/rajanyadav1162/go-microservice-system/internal/model"
+	"github.com/rajanyadav1162/go-microservice-system/internal/msg"
+	_ "github.com/rajanyadav1162/go-microservice-system/internal/msg"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"net/http"
 	"os"
 	"time"
 )
+
+var natsConn *msg.NATS
 
 func init() {
 	zerolog.TimeFieldFormat = time.RFC3339
@@ -45,6 +52,24 @@ func createOrder(c *gin.Context) {
 	}
 	log.Info().Uint("orderID", order.ID).Msg("order created")
 	c.JSON(http.StatusCreated, order)
+
+	//push event to jetstream................................
+	ev := event.OrderCreated{
+		OrderID:   fmt.Sprintf("%d", order.ID),
+		UserID:    order.UserID,
+		ConcertID: order.ConcertID,
+		Qty:       order.Qty,
+		Amount:    order.Amount,
+		Status:    order.Status,
+		CreatedAt: order.CreatedAt,
+	}
+	seq, err := natsConn.PublishEvent(context.Background(), "ORDERS.created", ev)
+	if err != nil {
+		log.Error().Err(err).Msg("publish failed")
+		// we still return 201 to caller; publisher is best-effort for now
+	} else {
+		log.Info().Uint64("seq", seq).Msg("event published to ORDERS.created")
+	}
 }
 
 func main() {
@@ -53,6 +78,18 @@ func main() {
 		log.Fatal().Err(err).Msg("db init failed")
 	}
 	log.Info().Msg("db connected & migrated")
+
+	//connecting jetstream
+	var err error
+	natsConn, err = msg.Connect("nats://localhost:4222")
+	if err != nil {
+		log.Fatal().Err(err).Msg("nats connect failed")
+	}
+	defer natsConn.Close()
+	log.Info().Msg("nats jetstream connected")
+	defer natsConn.Close()
+	defer natsConn.Close()
+	log.Info().Msg("nats jetstream connected")
 
 	log.Info().Msg("starting api service")
 	r := gin.New()
